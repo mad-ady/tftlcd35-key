@@ -29,13 +29,16 @@
 //
 //------------------------------------------------------------------------------------------------------------
 #define KEY_PRESS   1
-#define KEY_RELEASE 1022
+static unsigned int KEY_RELEASE = 1022;
  
 #define HIGH        1
 #define LOW         0
+#define LONG        2
  
 #define UPDATE_PERIOD   200 // 200ms
- 
+
+#define PLATFORM_C1   1
+#define PLATFORM_XU4  2
 //------------------------------------------------------------------------------------------------------------
 //
 // UINPUT Handle:
@@ -50,21 +53,21 @@ int uInputFd = -1;
 // Keypad Define:
 //
 //------------------------------------------------------------------------------------------------------------
-#define KEY1_ADC 5
-#define KEY2_ADC 515
-#define KEY3_ADC 680
-#define KEY4_ADC 770
+static unsigned int KEY1_ADC = 5;
+static unsigned int KEY2_ADC = 515;
+static unsigned int KEY3_ADC = 680;
+static unsigned int KEY4_ADC = 770;
 
-struct  {
+static unsigned int ANALOGREAD_INPUT = 0;
+
+typedef struct  {
     unsigned int	adc_val;       // GPIO Number
     char		code;       // Keycode
     unsigned int	status;     // current status
-}   UserKey[] = {
-    {   KEY1_ADC, KEY_SPACE, KEY_RELEASE},
-    {   KEY2_ADC, KEY_UP, KEY_RELEASE},
-    {   KEY3_ADC, KEY_DOWN, KEY_RELEASE},
-    {   KEY4_ADC, KEY_ENTER, KEY_RELEASE},
-};
+    unsigned int	count;	    // how many times has the value persisted
+}   UserKeyStruct;
+
+static UserKeyStruct UserKey[4];
  
 #define MAX_KEY_CNT     sizeof(UserKey)/sizeof(UserKey[0])
 
@@ -110,19 +113,40 @@ static int send_key_event (int fd, unsigned int type, unsigned int code, unsigne
 static void key_update (void)
 {
     int i;
- 
+    printf("Reading...\n");
+    //itterate through all defined keys 
     for(i = 0; i < MAX_KEY_CNT; i++)    {
-    if (!compareKEY(analogRead(0), UserKey[i].status)) {
-        UserKey[i].status = analogRead(0);
+      unsigned short value = analogRead(ANALOGREAD_INPUT);
+      
+      if (!compareKEY(value, UserKey[i].status)) {
+        //keys differ, need to update the pressed key
+	printf("UserKey[%d]: old value: %d, new value: %d, old count %d\n", i, UserKey[i].status, value, UserKey[i].count);
+	UserKey[i].status = value;
+	UserKey[i].count = 0;
+
+	//see if the key was pressed, released, or held
+	unsigned int keystatus = LOW;
+	if(! compareKEY(UserKey[i].status, UserKey[i].adc_val)){
+		keystatus = LOW;
+	}
+	else{
+		keystatus = HIGH;
+	}
+
+	printf("UserKey[%d]: keystatus: %d\n", i, keystatus);
+
         send_key_event( uInputFd,
                 EV_KEY,
                 UserKey[i].code,
-                !compareKEY(UserKey[i].status, UserKey[i].adc_val) ? 0 : 1);
+                keystatus);
         send_key_event( uInputFd, 
                 EV_SYN,
                 SYN_REPORT,
                 0 );
-    }
+      }
+      else{
+	UserKey[i].count++;
+      }
     }
 }
  
@@ -179,7 +203,37 @@ err_out:
  
     return  -1;
  }
- 
+
+//Detect platform based on /proc/cpuinfo
+int detect_platform(){
+    FILE *fp;
+    int result = 0;
+    
+    if((fp = fopen("/proc/cpuinfo", "r")) == NULL) {
+        return -1;
+    }
+    printf("Opened /proc/cpuinfo\n");
+    char* word = malloc(120); //bytes per word
+    
+    while(fscanf(fp, "%s", word) != EOF){
+        if(strcmp(word, "ODROID-C1") == 0){
+            result = PLATFORM_C1;
+        }
+        if(strcmp(word, "ODROID-C2") == 0){
+            result = PLATFORM_C1;
+        }
+        if(strcmp(word, "ODROID-XU4") == 0){
+            result = PLATFORM_XU4;
+        }
+        if(strcmp(word, "EXYNOS") == 0){
+            result = PLATFORM_XU4;
+        }
+    }
+    free(word);
+    fclose(fp);
+    return result; 
+}
+
 //------------------------------------------------------------------------------------------------------------
 //
 // Start Program
@@ -187,10 +241,29 @@ err_out:
 //------------------------------------------------------------------------------------------------------------
 int main (int argc, char *argv[])
 {
+    printf("Starting\n");
     static int timer = 0 ;
- 
+    
+    /*UserKey[0] = {.adc_val=KEY1_ADC, .code=KEY_F13, .status=KEY_RELEASE, .count=0};
+    UserKey[1] = {   KEY2_ADC, KEY_F14, KEY_RELEASE, 0};
+    {   KEY3_ADC, KEY_F15, KEY_RELEASE, 0},
+    {   KEY4_ADC, KEY_F16, KEY_RELEASE, 0},*/
+    
+
+    // Do platform detection based on /proc/cpuinfo
+    int platform = detect_platform();
+    //initialize with the correct defaults
+    if(platform == PLATFORM_C1){
+        printf("Starting on platform C0/C1/C2\n");
+        ANALOGREAD_INPUT = 0;
+    else if(platform == PLATFORM_XU4){
+        printf("Starting on platform XU3/XU4\n");
+        ANALOGREAD_INPUT = 1;
+    }
+    
     wiringPiSetup ();
- 
+    
+    return 0;
     if (system_init() < 0)
     {
         fprintf (stderr, "%s: System Init failed\n", __func__);     return -1;
