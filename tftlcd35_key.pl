@@ -4,22 +4,34 @@ use warnings;
 use Log::Log4perl qw(:easy);
 use Time::HiRes qw(usleep);
 use Data::Dumper;
+use Proc::Background;
+use Config::YAML;
 
 # Dependencies
-# sudo apt-get install liblog-log4perl-perl
+# sudo apt-get install liblog-log4perl-perl libproc-background-perl libconfig-yaml-perl
 
 # Keyboard code for Odroid 3.5" TFT buttons with multiclick support
-# The code generates a virtual keyboard and outputs some keycodes 
-# which can be further processed with something like triggerhappy
-
+# The code executes external commands as a response to button presses
 
 # logging goes to stderr
 Log::Log4perl->easy_init($DEBUG);
 my $logger = Log::Log4perl->get_logger();
 
+
+my $config;
+#load configuration
+if(defined $ARGV[0] && -f $ARGV[0]){
+    $config = Config::YAML->new(config => $ARGV[0]);    
+}
+else{
+    die "Usage: $0 tftlcd_config.yaml";
+}
+
 #configuration
-my $updatePeriod = 200_000; #check keys every $updatePeriod microseconds
-#define the thresholds for each button for each platform
+my $updatePeriod = $config->{updatePeriod} || 200_000; #check keys every $updatePeriod microseconds
+my $bufferSize = $config->{bufferSize} || 10; #how many keypresses to keep in a buffer before processing a composite event. A large value results in a delay of an action
+my $longPress = $config->{longPress} || 0.7; #how much of the buffer must contain the same key before it is considered a long press event? Eg 70%
+
 my %adc = (
     'C1' => {
         'KEY1' => 5,
@@ -46,6 +58,9 @@ my %adc = (
         'node' => '/sys/devices/12d10000.adc/iio:device0/in_voltage3_raw',
         }
 );
+
+my @buffer;
+
 my $platform = 'none'; #updated in main() at runtime
 
 sub detect_platform {
@@ -96,19 +111,127 @@ sub analogRead{
 
 sub key_update {
     my $raw_value = analogRead();
+    return if($raw_value < 0);
     $logger->debug("Read $raw_value");
+    my $oneKeyPressed = 0;
+    
     foreach my $key (keys %{$adc{$platform}}){
         next if ($key!~/KEY/);
         my $keyIsPressed = compareKEY($raw_value, $adc{$platform}{$key});
         if($keyIsPressed){
-            $logger->info("$key is pressed");
+            $logger->debug("$key is pressed");
+            $oneKeyPressed = 1;
+            #push the key to the buffer
+            push @buffer, $key;
         }
+    }
+    if(scalar(@buffer)){
+        $logger->debug("Buffer contains: ".join("|", @buffer));
+        if(! $oneKeyPressed){
+            push @buffer, " ";
+        }
+    }
+    
+    #if the buffer gets too big, interpret the result
+    if(scalar(@buffer) > $bufferSize){
+        
+        #long presses take precedence - was there a long press detected?
+        my $long = longPress(@buffer);
+        my $sequence = undef;
+        if($long ne "0"){
+            $sequence = $long;
+        }
+        else{
+            $sequence = keySequence(@buffer);
+        }
+        
+        #do something based on the key pressed
+        doSomething($sequence);
+        #reset buffer when done
+        @buffer = ();
+        
+        #maybe do a little sleep to debounce subsequent keys?
     }
 }
 
+sub keySequence {
+    my @buffer = @_;
+    $logger->info("Processing buffer: ".join("|", @buffer));
+    
+    my @sequence;
+    my $current = undef;
+    my $previous = undef;
+    foreach my $item(@buffer){
+        #shift things around one position
+        $previous = $current;
+        $current = $item;
+        
+        if(defined $previous){
+            if($current ne $previous){
+                if($current ne ' '){
+                    #add it to the sequence list
+                    push @sequence, $current;
+                }
+                else{
+                    push @sequence, "-";
+                }
+            }
+            else{
+                #if the current entry is the same as previous, ignore it (duplicated key)
+            }
+        }
+        else{
+            #first reading - save the key if it's not space (it couldn't be space anyway)
+            if($current ne ' '){
+                push @sequence, $current;
+            }
+        }
+    }
+    #collapse the array into a string
+    my $seq = join('', @sequence);
+    #cut out beginning or ending '-'
+    $seq=~s/^-|-$//g;
+    $logger->info("Identified key sequence: $seq");
+    return $seq;
+}
+
+sub longPress {
+    my @buffer = @_;
+    
+    #see if any one key has been held down for at least $longPress
+    my %keys;
+    foreach my $item (@buffer){
+        if($item=~/KEY/){
+            $keys{$item}++;
+        }
+    }
+    foreach my $key (sort {$keys{$a} <=> $keys{$b}} keys %keys ){
+        if($keys{$key} >= $longPress * scalar(@buffer)){
+            $logger->info("Identified long press for $key ($keys{$key})");
+            return "LONG$key";
+        }
+    }
+    return 0;
+}
+
+sub doSomething {
+    my $sequence = shift;
+    if(defined $config->{$sequence}){
+        $logger->info("Doing something for $sequence");
+        $logger->debug("Running ".$config->{$sequence});
+        my $proc = Proc::Background->new($config->{$sequence});
+        $logger->debug("Started process ".$proc->pid);
+    }
+    else{
+        $logger->error("No sequence defined $sequence");
+    }
+    
+}
+
+
 sub main {
     $platform = detect_platform();
-    $logger->debug("Running on platform $platform");
+    $logger->info("Running on platform $platform");
     print Dumper(\%adc);
     #read keys from the keypad
     while(1){
