@@ -5,6 +5,10 @@ my @key=qw/KEY1 KEY2 KEY3 KEY4/;
 print '
 # Configuration sample for tftlcd35_key.pl
 
+# Set logging level (logging goes to STDERR/journalctl). Allowed values are: DEBUG, INFO, WARN, ERROR, FATAL                                                    
+                                                                                
+logging: DEBUG
+
 # Set updatePeriod to the number of microseconds between key presses checks
 # Default is 200ms between key presses
 
@@ -33,8 +37,10 @@ longPress: 0.7
 foreach my $level1 (@key){
 	print "$level1: \n";
 	foreach my $level2 (@key){
+		last;
 		print "$level1-$level2: \n";
 		foreach my $level3 (@key){
+			last;
 			print "$level1-$level2-$level3: \n";
 		}
 	}

@@ -2,6 +2,7 @@
 use strict;
 use warnings;
 use Log::Log4perl qw(:easy);
+use Log::Log4perl::Level;
 use Time::HiRes qw(usleep);
 use Data::Dumper;
 use Proc::Background;
@@ -12,11 +13,6 @@ use Config::YAML;
 
 # Keyboard code for Odroid 3.5" TFT buttons with multiclick support
 # The code executes external commands as a response to button presses
-
-# logging goes to stderr
-Log::Log4perl->easy_init($DEBUG);
-my $logger = Log::Log4perl->get_logger();
-
 
 my $config;
 #load configuration
@@ -31,6 +27,12 @@ else{
 my $updatePeriod = $config->{updatePeriod} || 200_000; #check keys every $updatePeriod microseconds
 my $bufferSize = $config->{bufferSize} || 10; #how many keypresses to keep in a buffer before processing a composite event. A large value results in a delay of an action
 my $longPress = $config->{longPress} || 0.7; #how much of the buffer must contain the same key before it is considered a long press event? Eg 70%
+my $logLevel = $config->{logging} || "DEBUG"; #the logging level
+
+# logging goes to stderr
+my $level = Log::Log4perl::Level::to_priority($logLevel);
+Log::Log4perl->easy_init($level);
+my $logger = Log::Log4perl->get_logger(); 
 
 my %adc = (
     'C1' => {
